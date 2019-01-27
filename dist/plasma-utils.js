@@ -15,7 +15,7 @@ module.exports = {
   constants
 }
 
-},{"./src/constants":410,"./src/logging":414,"./src/range-manager":415,"./src/serialization":416,"./src/sum-tree/plasma-sum-tree.js":436,"./src/utils":438}],2:[function(require,module,exports){
+},{"./src/constants":410,"./src/logging":415,"./src/range-manager":416,"./src/serialization":417,"./src/sum-tree/plasma-sum-tree.js":437,"./src/utils":439}],2:[function(require,module,exports){
 function _arrayWithoutHoles(arr) {
   if (Array.isArray(arr)) {
     for (var i = 0, arr2 = new Array(arr.length); i < arr.length; i++) {
@@ -46142,6 +46142,62 @@ module.exports = {
 
 },{"bn.js":33}],411:[function(require,module,exports){
 /**
+ * Simple ephemeral database for testing.
+ */
+class EphemDB {
+  constructor () {
+    this.db = new Map()
+  }
+
+  async get (key, fallback) {
+    const exists = await this.exists(key)
+    if (!exists) {
+      if (arguments.length === 2) {
+        return fallback
+      } else {
+        throw new Error('Key not found in database')
+      }
+    }
+
+    let result = this.db.get(key)
+    return this._isJson(result) ? JSON.parse(result) : result
+  }
+
+  async set (key, value) {
+    if (!(value instanceof String || typeof value === 'string')) {
+      value = JSON.stringify(value)
+    }
+
+    this.db.set(key, value)
+  }
+
+  async delete (key) {
+    this.db.delete(key)
+  }
+
+  async exists (key) {
+    return this.db.has(key)
+  }
+
+  /**
+   * Checks if a thing is a valid JSON string.
+   * @param {*} str Thing to check.
+   * @return {boolean} `true` if it's a JSON string, `false` otherwise.
+   */
+  _isJson (str) {
+    try {
+      JSON.parse(str)
+    } catch (err) {
+      return false
+    }
+    return true
+  }
+}
+
+module.exports = EphemDB
+
+},{}],412:[function(require,module,exports){
+/**
  * A base class for loggers.
  */
 class BaseLogger {
@@ -46164,7 +46220,7 @@ class BaseLogger {
 
 module.exports = BaseLogger
 
-},{}],412:[function(require,module,exports){
+},{}],413:[function(require,module,exports){
 const BaseLogger = require('./base-logger')
 
 /**
@@ -46182,7 +46238,7 @@ class ConsoleLogger extends BaseLogger {
 
 module.exports = ConsoleLogger
 
-},{"./base-logger":411}],413:[function(require,module,exports){
+},{"./base-logger":412}],414:[function(require,module,exports){
 const BaseLogger = require('./base-logger')
 const debug = require('debug')
 
@@ -46207,7 +46263,7 @@ class DebugLogger extends BaseLogger {
 
 module.exports = DebugLogger
 
-},{"./base-logger":411,"debug":78}],414:[function(require,module,exports){
+},{"./base-logger":412,"debug":78}],415:[function(require,module,exports){
 const ConsoleLogger = require('./console-logger')
 const DebugLogger = require('./debug-logger')
 
@@ -46217,7 +46273,8 @@ module.exports = {
   DefaultLogger: DebugLogger
 }
 
-},{"./console-logger":412,"./debug-logger":413}],415:[function(require,module,exports){
+},{"./console-logger":413,"./debug-logger":414}],416:[function(require,module,exports){
+const EphemDB = require('./db/ephem-db.js')
 const BigNum = require('bn.js')
 
 // TODO: Maybe make these functions into static methods?
@@ -46290,6 +46347,13 @@ function createRange (token, start, end) {
  * Service that manages the user's ranges automatically.
  */
 class RangeManagerService {
+  constructor (db) {
+    if (db === undefined) {
+      this.db = new EphemDB()
+    }
+    this.db = db
+  }
+
   /**
    * Returns the list of ranges owned by an address.
    * @param {string} address An address.
@@ -46517,11 +46581,11 @@ class RangeManagerService {
   }
 
   async _setRanges (address, ranges) {
-    return this.services.db.set(`ranges:${address}`, ranges)
+    return this.db.set(`ranges:${address}`, ranges)
   }
 
   async _getRanges (address) {
-    return this._castRanges(await this.services.db.get(`ranges:${address}`, []))
+    return this._castRanges(await this.db.get(`ranges:${address}`, []))
   }
 
   _castRanges (ranges) {
@@ -46539,7 +46603,7 @@ class RangeManagerService {
 
 module.exports = RangeManagerService
 
-},{"bn.js":33}],416:[function(require,module,exports){
+},{"./db/ephem-db.js":411,"bn.js":33}],417:[function(require,module,exports){
 const schemas = require('./schemas')
 const models = require('./models')
 
@@ -46558,7 +46622,7 @@ module.exports = {
   decode
 }
 
-},{"./models":418,"./schemas":429}],417:[function(require,module,exports){
+},{"./models":419,"./schemas":430}],418:[function(require,module,exports){
 (function (Buffer){
 const web3Utils = require('../../web3-utils')
 
@@ -46606,7 +46670,7 @@ module.exports = BaseModel
 
 }).call(this,{"isBuffer":require("../../../node_modules/is-buffer/index.js")})
 
-},{"../../../node_modules/is-buffer/index.js":134,"../../web3-utils":439}],418:[function(require,module,exports){
+},{"../../../node_modules/is-buffer/index.js":134,"../../web3-utils":440}],419:[function(require,module,exports){
 const Signature = require('./signature')
 const Transfer = require('./transfer')
 const SignedTransaction = require('./transaction').SignedTransaction
@@ -46623,7 +46687,7 @@ module.exports = {
   TransactionProof
 }
 
-},{"./signature":419,"./transaction":421,"./transaction-proof":420,"./transfer":423,"./transfer-proof":422}],419:[function(require,module,exports){
+},{"./signature":420,"./transaction":422,"./transaction-proof":421,"./transfer":424,"./transfer-proof":423}],420:[function(require,module,exports){
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
 
@@ -46638,7 +46702,7 @@ class Signature extends BaseModel {
 
 module.exports = Signature
 
-},{"../schemas":429,"./base-model":417}],420:[function(require,module,exports){
+},{"../schemas":430,"./base-model":418}],421:[function(require,module,exports){
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
 
@@ -46653,7 +46717,7 @@ class TransactionProof extends BaseModel {
 
 module.exports = TransactionProof
 
-},{"../schemas":429,"./base-model":417}],421:[function(require,module,exports){
+},{"../schemas":430,"./base-model":418}],422:[function(require,module,exports){
 const web3Utils = require('../../web3-utils')
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
@@ -46699,7 +46763,7 @@ module.exports = {
   SignedTransaction
 }
 
-},{"../../web3-utils":439,"../schemas":429,"./base-model":417}],422:[function(require,module,exports){
+},{"../../web3-utils":440,"../schemas":430,"./base-model":418}],423:[function(require,module,exports){
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
 
@@ -46714,7 +46778,7 @@ class TransferProof extends BaseModel {
 
 module.exports = TransferProof
 
-},{"../schemas":429,"./base-model":417}],423:[function(require,module,exports){
+},{"../schemas":430,"./base-model":418}],424:[function(require,module,exports){
 const BN = require('bn.js')
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
@@ -46758,7 +46822,7 @@ class Transfer extends BaseModel {
 
 module.exports = Transfer
 
-},{"../schemas":429,"./base-model":417,"bn.js":33}],424:[function(require,module,exports){
+},{"../schemas":430,"./base-model":418,"bn.js":33}],425:[function(require,module,exports){
 const web3Utils = require('../../web3-utils')
 const BaseSchemaType = require('./base-schema-type')
 
@@ -46801,7 +46865,7 @@ class SchemaAddress extends BaseSchemaType {
 
 module.exports = SchemaAddress
 
-},{"../../web3-utils":439,"./base-schema-type":425}],425:[function(require,module,exports){
+},{"../../web3-utils":440,"./base-schema-type":426}],426:[function(require,module,exports){
 /**
  * Base schema type that can be extended.
  */
@@ -46915,7 +46979,7 @@ class BaseSchemaType {
 
 module.exports = BaseSchemaType
 
-},{}],426:[function(require,module,exports){
+},{}],427:[function(require,module,exports){
 (function (Buffer){
 const BaseSchemaType = require('./base-schema-type')
 
@@ -46978,7 +47042,7 @@ module.exports = SchemaBuffer
 
 }).call(this,require("buffer").Buffer)
 
-},{"./base-schema-type":425,"buffer":66}],427:[function(require,module,exports){
+},{"./base-schema-type":426,"buffer":66}],428:[function(require,module,exports){
 const BigNum = require('bn.js')
 const BaseSchemaType = require('./base-schema-type')
 
@@ -47033,7 +47097,7 @@ class SchemaNumber extends BaseSchemaType {
 
 module.exports = SchemaNumber
 
-},{"./base-schema-type":425,"bn.js":33}],428:[function(require,module,exports){
+},{"./base-schema-type":426,"bn.js":33}],429:[function(require,module,exports){
 const BigNum = require('bn.js')
 
 /**
@@ -47165,7 +47229,7 @@ class Schema {
 
 module.exports = Schema
 
-},{"bn.js":33}],429:[function(require,module,exports){
+},{"bn.js":33}],430:[function(require,module,exports){
 const SignatureSchema = require('./signature')
 const TransferSchema = require('./transfer')
 const UnsignedTransactionSchema = require('./transaction')
@@ -47183,7 +47247,7 @@ module.exports = {
   TransactionProofSchema
 }
 
-},{"./signature":430,"./transaction":432,"./transaction-proof":431,"./transfer":434,"./transfer-proof":433}],430:[function(require,module,exports){
+},{"./signature":431,"./transaction":433,"./transaction-proof":432,"./transfer":435,"./transfer-proof":434}],431:[function(require,module,exports){
 const Schema = require('../schema')
 const Bytes = require('../schema-types/bytes')
 
@@ -47207,7 +47271,7 @@ const SignatureSchema = new Schema({
 
 module.exports = SignatureSchema
 
-},{"../schema":428,"../schema-types/bytes":426}],431:[function(require,module,exports){
+},{"../schema":429,"../schema-types/bytes":427}],432:[function(require,module,exports){
 const Schema = require('../schema')
 const TransferProofSchema = require('./transfer-proof')
 
@@ -47219,7 +47283,7 @@ const TransactionProofSchema = new Schema({
 
 module.exports = TransactionProofSchema
 
-},{"../schema":428,"./transfer-proof":433}],432:[function(require,module,exports){
+},{"../schema":429,"./transfer-proof":434}],433:[function(require,module,exports){
 const Schema = require('../schema')
 const Number = require('../schema-types/number')
 const TransferSchema = require('./transfer')
@@ -47255,7 +47319,7 @@ module.exports = {
   UnignedTransactionSchema
 }
 
-},{"../schema":428,"../schema-types/number":427,"./signature":430,"./transfer":434}],433:[function(require,module,exports){
+},{"../schema":429,"../schema-types/number":428,"./signature":431,"./transfer":435}],434:[function(require,module,exports){
 const Schema = require('../schema')
 const Number = require('../schema-types/number')
 const Bytes = require('../schema-types/bytes')
@@ -47281,7 +47345,7 @@ const TransferProofSchema = new Schema({
 
 module.exports = TransferProofSchema
 
-},{"../schema":428,"../schema-types/bytes":426,"../schema-types/number":427,"./signature":430}],434:[function(require,module,exports){
+},{"../schema":429,"../schema-types/bytes":427,"../schema-types/number":428,"./signature":431}],435:[function(require,module,exports){
 const Schema = require('../schema')
 const Address = require('../schema-types/address')
 const Number = require('../schema-types/number')
@@ -47314,7 +47378,7 @@ const TransferSchema = new Schema({
 
 module.exports = TransferSchema
 
-},{"../schema":428,"../schema-types/address":424,"../schema-types/number":427}],435:[function(require,module,exports){
+},{"../schema":429,"../schema-types/address":425,"../schema-types/number":428}],436:[function(require,module,exports){
 const BigNum = require('bn.js')
 const utils = require('../utils')
 
@@ -47332,7 +47396,7 @@ class MerkleTreeNode {
 
 module.exports = MerkleTreeNode
 
-},{"../utils":438,"bn.js":33}],436:[function(require,module,exports){
+},{"../utils":439,"bn.js":33}],437:[function(require,module,exports){
 (function (Buffer){
 const BigNum = require('bn.js')
 const web3Utils = require('../web3-utils')
@@ -47632,7 +47696,7 @@ module.exports = PlasmaMerkleSumTree
 
 }).call(this,{"isBuffer":require("../../node_modules/is-buffer/index.js")})
 
-},{"../../node_modules/is-buffer/index.js":134,"../constants":410,"../serialization":416,"../utils":438,"../web3-utils":439,"./merkle-tree-node":435,"./sum-tree":437,"bn.js":33}],437:[function(require,module,exports){
+},{"../../node_modules/is-buffer/index.js":134,"../constants":410,"../serialization":417,"../utils":439,"../web3-utils":440,"./merkle-tree-node":436,"./sum-tree":438,"bn.js":33}],438:[function(require,module,exports){
 const web3Utils = require('../web3-utils')
 const utils = require('../utils')
 const MerkleTreeNode = require('./merkle-tree-node')
@@ -47700,7 +47764,7 @@ class MerkleSumTree {
 
 module.exports = MerkleSumTree
 
-},{"../utils":438,"../web3-utils":439,"./merkle-tree-node":435}],438:[function(require,module,exports){
+},{"../utils":439,"../web3-utils":440,"./merkle-tree-node":436}],439:[function(require,module,exports){
 (function (Buffer){
 const BigNum = require('bn.js')
 const web3Utils = require('./web3-utils')
@@ -47870,7 +47934,7 @@ module.exports = {
 
 }).call(this,require("buffer").Buffer)
 
-},{"./constants":410,"./serialization":416,"./web3-utils":439,"bn.js":33,"buffer":66}],439:[function(require,module,exports){
+},{"./constants":410,"./serialization":417,"./web3-utils":440,"bn.js":33,"buffer":66}],440:[function(require,module,exports){
 const { Accounts } = require('web3-eth-accounts')
 const web3Accounts = new Accounts('http://localhost:8545')
 

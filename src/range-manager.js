@@ -1,3 +1,4 @@
+const EphemDB = require('./db/ephem-db.js')
 const BigNum = require('bn.js')
 
 // TODO: Maybe make these functions into static methods?
@@ -70,6 +71,13 @@ function createRange (token, start, end) {
  * Service that manages the user's ranges automatically.
  */
 class RangeManagerService {
+  constructor (db) {
+    if (db === undefined) {
+      this.db = new EphemDB()
+    }
+    this.db = db
+  }
+
   /**
    * Returns the list of ranges owned by an address.
    * @param {string} address An address.
@@ -297,11 +305,11 @@ class RangeManagerService {
   }
 
   async _setRanges (address, ranges) {
-    return this.services.db.set(`ranges:${address}`, ranges)
+    return this.db.set(`ranges:${address}`, ranges)
   }
 
   async _getRanges (address) {
-    return this._castRanges(await this.services.db.get(`ranges:${address}`, []))
+    return this._castRanges(await this.db.get(`ranges:${address}`, []))
   }
 
   _castRanges (ranges) {
