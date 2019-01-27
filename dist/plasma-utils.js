@@ -1,5 +1,6 @@
 (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 const utils = require('./src/utils')
+const RangeManager = require('./src/range-manager')
 const constants = require('./src/constants')
 const serialization = require('./src/serialization')
 const PlasmaMerkleSumTree = require('./src/sum-tree/plasma-sum-tree.js')
@@ -7,13 +8,14 @@ const logging = require('./src/logging')
 
 module.exports = {
   utils,
+  RangeManager,
   PlasmaMerkleSumTree,
   logging,
   serialization,
   constants
 }
 
-},{"./src/constants":410,"./src/logging":414,"./src/serialization":415,"./src/sum-tree/plasma-sum-tree.js":435,"./src/utils":437}],2:[function(require,module,exports){
+},{"./src/constants":410,"./src/logging":414,"./src/range-manager":415,"./src/serialization":416,"./src/sum-tree/plasma-sum-tree.js":436,"./src/utils":438}],2:[function(require,module,exports){
 function _arrayWithoutHoles(arr) {
   if (Array.isArray(arr)) {
     for (var i = 0, arr2 = new Array(arr.length); i < arr.length; i++) {
@@ -16508,7 +16510,7 @@ module.exports={
   "_args": [
     [
       "elliptic@6.4.1",
-      "/Users/ben/plasma/plasma-utils"
+      "/Users/karlfloersch/workspace/ethereum/plasma-utils"
     ]
   ],
   "_from": "elliptic@6.4.1",
@@ -16534,7 +16536,7 @@ module.exports={
   ],
   "_resolved": "https://registry.npmjs.org/elliptic/-/elliptic-6.4.1.tgz",
   "_spec": "6.4.1",
-  "_where": "/Users/ben/plasma/plasma-utils",
+  "_where": "/Users/karlfloersch/workspace/ethereum/plasma-utils",
   "author": {
     "name": "Fedor Indutny",
     "email": "fedor@indutny.com"
@@ -44812,7 +44814,7 @@ module.exports={
   ],
   "_resolved": "git://github.com/frozeman/WebSocket-Node.git#6c72925e3f8aaaea8dc8450f97627e85263999f2",
   "_spec": "websocket@git://github.com/frozeman/WebSocket-Node.git#6c72925e3f8aaaea8dc8450f97627e85263999f2",
-  "_where": "/Users/ben/plasma/plasma-utils/node_modules/web3-providers",
+  "_where": "/Users/karlfloersch/workspace/ethereum/plasma-utils/node_modules/web3-providers",
   "author": {
     "name": "Brian McKelvey",
     "email": "brian@worlize.com",
@@ -46216,6 +46218,328 @@ module.exports = {
 }
 
 },{"./console-logger":412,"./debug-logger":413}],415:[function(require,module,exports){
+const BigNum = require('bn.js')
+
+// TODO: Maybe make these functions into static methods?
+/**
+ * Validates a range.
+ * - Range start should be >= 0
+ * - Range start should be < range end
+ * @param {*} range A range object.
+ * @return {boolean} `true` if the range is valid, `false` otherwise.
+ */
+function isValidRange (range) {
+  // TODO: Check that the token is valid.
+  return range.start.gte(0) && range.start.lt(range.end)
+}
+
+/**
+ * Orders the provided ranges, collapsing them if possible
+ * @param {*} rangeA A range object.
+ * @param {*} rangeB A range object.
+ * @return {array} array of ordered ranges
+ */
+function orderRanges (rangeA, rangeB) {
+  // No curRange and new range comes before current range
+  if (rangeA.end.lt(rangeB.start)) {
+    return [rangeA, rangeB]
+  } else if (rangeA.start.eq(rangeB.end)) {
+    // No curRange and new range start == current range end
+    // merge to end of current range
+    rangeB.end = rangeA.end
+    return [rangeB]
+  } else if (rangeA.end.eq(rangeB.start)) {
+    // If new range end == current range start
+    // merge to front of current range
+    rangeB.start = rangeA.start
+    return [rangeB]
+  } else {
+    return [rangeB, rangeA]
+  }
+}
+
+/**
+ * Checks is an array of ranges contains another range
+ * @param {array} ranges An array of ranges to check.
+ * @param {*} range A range object.
+ * @return {boolean} `true` if the user owns the range, `false` otherwise.
+ */
+function containsRange (ranges, range) {
+  return ranges.some(
+    ({ start: ownedRangeStart, end: ownedRangeEnd }) =>
+      ownedRangeStart.lte(range.start) && ownedRangeEnd.gte(range.end)
+  )
+}
+
+/**
+ * Creates a range object
+ * @param {String} token Tokens address.
+ * @param {Number} start Range start.
+ * @param {Number} end Range end.
+ * @return {Range} Range object
+ */
+function createRange (token, start, end) {
+  return {
+    token: new BigNum(token, 'hex'),
+    start: new BigNum(start, 'hex'),
+    end: new BigNum(end, 'hex')
+  }
+}
+
+/**
+ * Service that manages the user's ranges automatically.
+ */
+class RangeManagerService {
+  /**
+   * Returns the list of ranges owned by an address.
+   * @param {string} address An address.
+   * @return {Array} List of owned ranges.
+   */
+  async getOwnedRanges (address) {
+    return this._getRanges(address)
+  }
+
+  /**
+   * Returns a list of ranges relevant to a transaction.
+   * @param {*} transaction A Transaction object.
+   * @return {Array} List of ranges relevant to that transaction.
+   */
+  async getRelevantRanges (transaction) {
+    let ranges = []
+    for (let transfer of transaction.transfers) {
+      ranges.concat(await this.getOwnedRanges(transfer.sender))
+    }
+    return ranges
+  }
+
+  /**
+   * Determines if an address owners a specific range.
+   * i.e. if a user owns range [0, 100] and this method is
+   * called with [10, 30], it will return true.
+   * @param {string} address An address.
+   * @param {*} range A range object.
+   * @return {boolean} `true` if the user owns the range, `false` otherwise.
+   */
+  async ownsRange (address, range) {
+    range = this._castRange(range)
+
+    const ownedRanges = await this.getOwnedRanges(address)
+    return containsRange(ownedRanges, range)
+  }
+
+  /**
+   * Picks the best ranges for a given transaction.
+   * @param {string} address An address.
+   * @param {string} token A tokens address.
+   * @param {number} amount Number of tokens being sent.
+   * @return {*} List of ranges to use for the transaction.
+   */
+  async pickRanges (address, token, amount) {
+    token = new BigNum(token, 'hex')
+    amount = new BigNum(amount, 'hex')
+
+    const ownedRanges = await this.getOwnedRanges(address)
+    const sortedRanges = ownedRanges.sort((a, b) =>
+      b.end.sub(b.start).sub(a.end.sub(a.start))
+    )
+    const pickedRanges = []
+
+    while (amount.gt(new BigNum(0))) {
+      // throw if no ranges left
+      if (sortedRanges.length === 0) {
+        throw new Error(
+          'Address does not own enough ranges to cover the amount.'
+        )
+      }
+
+      const smallestRange = sortedRanges.pop()
+
+      if (smallestRange.token.eq(token)) {
+        const smallestRangeLength = smallestRange.end.sub(smallestRange.start)
+
+        if (smallestRangeLength.lte(amount)) {
+          pickedRanges.push(smallestRange)
+          amount = amount.sub(smallestRangeLength)
+        } else {
+          // Pick a partial range
+          const partialRange = createRange(
+            smallestRange.token,
+            smallestRange.start,
+            smallestRange.start.add(amount)
+          )
+          pickedRanges.push(partialRange)
+          break
+        }
+      }
+    }
+
+    pickedRanges.sort((a, b) => a.start.sub(b.start))
+    return pickedRanges
+  }
+
+  /**
+   * Determines if an account can spend an amount of a token.
+   * @param {*} address An address
+   * @param {string} token A tokens address.
+   * @param {*} amount Number of tokens being sent.
+   * @return {boolean} `true` if the user can spend the tokens, `false` otherwise.
+   */
+  async canSpend (address, token, amount) {
+    try {
+      await this.pickRanges(address, token, amount)
+      return true
+    } catch (err) {
+      return false
+    }
+  }
+
+  /**
+   * Adds a range for a given user.
+   * @param {*} address An address.
+   * @param {array} range A range to add.
+   */
+  async addRange (address, range) {
+    await this.addRanges(address, [range])
+  }
+
+  /**
+   * Adds ranges for a given user.
+   * @param {*} address An address.
+   * @param {string} token A tokens address.
+   * @param {*} ranges Ranges to add.
+   */
+  async addRanges (address, ranges) {
+    ranges = this._castRanges(ranges)
+
+    // Throw if provided range is invalid
+    if (ranges.some((range) => !isValidRange(range))) {
+      throw new Error(`Invalid range provided: ${ranges}`)
+    }
+
+    const ownedRanges = (await this.getOwnedRanges(address)) || []
+
+    // If there are no owned ranges,
+    // just sort and add the new ranges
+    if (ownedRanges.length === 0) {
+      ranges.sort((a, b) => a.start.sub(b.start))
+      return this._setRanges(address, ranges)
+    }
+
+    ranges = ranges.concat(ownedRanges)
+    ranges.sort((a, b) => a.start.sub(b.start))
+
+    const nextRanges = ranges.reduce((nextRanges, newRange) => {
+      if (nextRanges.length === 0) {
+        return [newRange]
+      }
+      const lastRange = nextRanges.pop()
+      return nextRanges.concat(orderRanges(lastRange, newRange))
+    }, [])
+
+    return this._setRanges(address, nextRanges)
+  }
+
+  /**
+   * Removes a range for a given user.
+   * @param {*} address An address.
+   * @param {*} range A range to remove.
+   */
+  async removeRange (address, range) {
+    return this.removeRanges(address, [range])
+  }
+
+  /**
+   * Removes a sequence of ranges for a given user.
+   * @param {*} address An address.
+   * @param {*} ranges An array of ranges to remove.
+   */
+  async removeRanges (address, ranges) {
+    ranges = this._castRanges(ranges)
+
+    const ownedRanges = await this.getOwnedRanges(address)
+
+    if (ranges.some((range) => !containsRange(ownedRanges, range))) {
+      throw new Error(`Attempted to remove a range not owned by address.`)
+    }
+
+    ranges.sort((a, b) => b.start.sub(a.start))
+
+    let toRemove = ranges.pop()
+    const nextRanges = ownedRanges.reduce((nextRanges, ownedRange) => {
+      if (!toRemove) {
+        // All ranges removed already
+        nextRanges.push(ownedRange)
+      } else if (
+        ownedRange.start.eq(toRemove.start) &&
+        ownedRange.end.eq(toRemove.end) &&
+        ownedRange.token.eq(toRemove.token)
+      ) {
+        // Remove this range
+        toRemove = ranges.pop()
+      } else if (
+        ownedRange.start.lt(toRemove.start) &&
+        ownedRange.end.gt(toRemove.end) &&
+        ownedRange.token.eq(toRemove.token)
+      ) {
+        // This range contains the range to remove
+        nextRanges = nextRanges.concat([
+          createRange(ownedRange.token, ownedRange.start, toRemove.start),
+          createRange(ownedRange.token, toRemove.end, ownedRange.end)
+        ])
+        toRemove = ranges.pop()
+      } else if (
+        ownedRange.start.eq(toRemove.start) &&
+        ownedRange.end.gt(toRemove.end) &&
+        ownedRange.token.eq(toRemove.token)
+      ) {
+        // Remove front of a range
+        nextRanges.push(
+          createRange(ownedRange.token, toRemove.end, ownedRange.end)
+        )
+        toRemove = ranges.pop()
+      } else if (
+        ownedRange.start.lt(toRemove.start) &&
+        ownedRange.end.eq(toRemove.end) &&
+        ownedRange.token.eq(toRemove.token)
+      ) {
+        // Remove end of a range
+        nextRanges.push(
+          createRange(ownedRange.token, ownedRange.start, toRemove.start)
+        )
+        toRemove = ranges.pop()
+      } else {
+        nextRanges.push(ownedRange)
+      }
+      return nextRanges
+    }, [])
+
+    return this._setRanges(address, nextRanges)
+  }
+
+  async _setRanges (address, ranges) {
+    return this.services.db.set(`ranges:${address}`, ranges)
+  }
+
+  async _getRanges (address) {
+    return this._castRanges(await this.services.db.get(`ranges:${address}`, []))
+  }
+
+  _castRanges (ranges) {
+    return ranges.map(this._castRange.bind(this))
+  }
+
+  _castRange (range) {
+    return {
+      start: new BigNum(range.start, 'hex'),
+      end: new BigNum(range.end, 'hex'),
+      token: new BigNum(range.token, 'hex')
+    }
+  }
+}
+
+module.exports = RangeManagerService
+
+},{"bn.js":33}],416:[function(require,module,exports){
 const schemas = require('./schemas')
 const models = require('./models')
 
@@ -46234,7 +46558,7 @@ module.exports = {
   decode
 }
 
-},{"./models":417,"./schemas":428}],416:[function(require,module,exports){
+},{"./models":418,"./schemas":429}],417:[function(require,module,exports){
 (function (Buffer){
 const web3Utils = require('../../web3-utils')
 
@@ -46282,7 +46606,7 @@ module.exports = BaseModel
 
 }).call(this,{"isBuffer":require("../../../node_modules/is-buffer/index.js")})
 
-},{"../../../node_modules/is-buffer/index.js":134,"../../web3-utils":438}],417:[function(require,module,exports){
+},{"../../../node_modules/is-buffer/index.js":134,"../../web3-utils":439}],418:[function(require,module,exports){
 const Signature = require('./signature')
 const Transfer = require('./transfer')
 const SignedTransaction = require('./transaction').SignedTransaction
@@ -46299,7 +46623,7 @@ module.exports = {
   TransactionProof
 }
 
-},{"./signature":418,"./transaction":420,"./transaction-proof":419,"./transfer":422,"./transfer-proof":421}],418:[function(require,module,exports){
+},{"./signature":419,"./transaction":421,"./transaction-proof":420,"./transfer":423,"./transfer-proof":422}],419:[function(require,module,exports){
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
 
@@ -46314,7 +46638,7 @@ class Signature extends BaseModel {
 
 module.exports = Signature
 
-},{"../schemas":428,"./base-model":416}],419:[function(require,module,exports){
+},{"../schemas":429,"./base-model":417}],420:[function(require,module,exports){
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
 
@@ -46329,7 +46653,7 @@ class TransactionProof extends BaseModel {
 
 module.exports = TransactionProof
 
-},{"../schemas":428,"./base-model":416}],420:[function(require,module,exports){
+},{"../schemas":429,"./base-model":417}],421:[function(require,module,exports){
 const web3Utils = require('../../web3-utils')
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
@@ -46375,7 +46699,7 @@ module.exports = {
   SignedTransaction
 }
 
-},{"../../web3-utils":438,"../schemas":428,"./base-model":416}],421:[function(require,module,exports){
+},{"../../web3-utils":439,"../schemas":429,"./base-model":417}],422:[function(require,module,exports){
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
 
@@ -46390,7 +46714,7 @@ class TransferProof extends BaseModel {
 
 module.exports = TransferProof
 
-},{"../schemas":428,"./base-model":416}],422:[function(require,module,exports){
+},{"../schemas":429,"./base-model":417}],423:[function(require,module,exports){
 const BN = require('bn.js')
 const BaseModel = require('./base-model')
 const schemas = require('../schemas')
@@ -46434,7 +46758,7 @@ class Transfer extends BaseModel {
 
 module.exports = Transfer
 
-},{"../schemas":428,"./base-model":416,"bn.js":33}],423:[function(require,module,exports){
+},{"../schemas":429,"./base-model":417,"bn.js":33}],424:[function(require,module,exports){
 const web3Utils = require('../../web3-utils')
 const BaseSchemaType = require('./base-schema-type')
 
@@ -46477,7 +46801,7 @@ class SchemaAddress extends BaseSchemaType {
 
 module.exports = SchemaAddress
 
-},{"../../web3-utils":438,"./base-schema-type":424}],424:[function(require,module,exports){
+},{"../../web3-utils":439,"./base-schema-type":425}],425:[function(require,module,exports){
 /**
  * Base schema type that can be extended.
  */
@@ -46591,7 +46915,7 @@ class BaseSchemaType {
 
 module.exports = BaseSchemaType
 
-},{}],425:[function(require,module,exports){
+},{}],426:[function(require,module,exports){
 (function (Buffer){
 const BaseSchemaType = require('./base-schema-type')
 
@@ -46654,7 +46978,7 @@ module.exports = SchemaBuffer
 
 }).call(this,require("buffer").Buffer)
 
-},{"./base-schema-type":424,"buffer":66}],426:[function(require,module,exports){
+},{"./base-schema-type":425,"buffer":66}],427:[function(require,module,exports){
 const BigNum = require('bn.js')
 const BaseSchemaType = require('./base-schema-type')
 
@@ -46709,7 +47033,7 @@ class SchemaNumber extends BaseSchemaType {
 
 module.exports = SchemaNumber
 
-},{"./base-schema-type":424,"bn.js":33}],427:[function(require,module,exports){
+},{"./base-schema-type":425,"bn.js":33}],428:[function(require,module,exports){
 const BigNum = require('bn.js')
 
 /**
@@ -46841,7 +47165,7 @@ class Schema {
 
 module.exports = Schema
 
-},{"bn.js":33}],428:[function(require,module,exports){
+},{"bn.js":33}],429:[function(require,module,exports){
 const SignatureSchema = require('./signature')
 const TransferSchema = require('./transfer')
 const UnsignedTransactionSchema = require('./transaction')
@@ -46859,7 +47183,7 @@ module.exports = {
   TransactionProofSchema
 }
 
-},{"./signature":429,"./transaction":431,"./transaction-proof":430,"./transfer":433,"./transfer-proof":432}],429:[function(require,module,exports){
+},{"./signature":430,"./transaction":432,"./transaction-proof":431,"./transfer":434,"./transfer-proof":433}],430:[function(require,module,exports){
 const Schema = require('../schema')
 const Bytes = require('../schema-types/bytes')
 
@@ -46883,7 +47207,7 @@ const SignatureSchema = new Schema({
 
 module.exports = SignatureSchema
 
-},{"../schema":427,"../schema-types/bytes":425}],430:[function(require,module,exports){
+},{"../schema":428,"../schema-types/bytes":426}],431:[function(require,module,exports){
 const Schema = require('../schema')
 const TransferProofSchema = require('./transfer-proof')
 
@@ -46895,7 +47219,7 @@ const TransactionProofSchema = new Schema({
 
 module.exports = TransactionProofSchema
 
-},{"../schema":427,"./transfer-proof":432}],431:[function(require,module,exports){
+},{"../schema":428,"./transfer-proof":433}],432:[function(require,module,exports){
 const Schema = require('../schema')
 const Number = require('../schema-types/number')
 const TransferSchema = require('./transfer')
@@ -46931,7 +47255,7 @@ module.exports = {
   UnignedTransactionSchema
 }
 
-},{"../schema":427,"../schema-types/number":426,"./signature":429,"./transfer":433}],432:[function(require,module,exports){
+},{"../schema":428,"../schema-types/number":427,"./signature":430,"./transfer":434}],433:[function(require,module,exports){
 const Schema = require('../schema')
 const Number = require('../schema-types/number')
 const Bytes = require('../schema-types/bytes')
@@ -46957,7 +47281,7 @@ const TransferProofSchema = new Schema({
 
 module.exports = TransferProofSchema
 
-},{"../schema":427,"../schema-types/bytes":425,"../schema-types/number":426,"./signature":429}],433:[function(require,module,exports){
+},{"../schema":428,"../schema-types/bytes":426,"../schema-types/number":427,"./signature":430}],434:[function(require,module,exports){
 const Schema = require('../schema')
 const Address = require('../schema-types/address')
 const Number = require('../schema-types/number')
@@ -46990,7 +47314,7 @@ const TransferSchema = new Schema({
 
 module.exports = TransferSchema
 
-},{"../schema":427,"../schema-types/address":423,"../schema-types/number":426}],434:[function(require,module,exports){
+},{"../schema":428,"../schema-types/address":424,"../schema-types/number":427}],435:[function(require,module,exports){
 const BigNum = require('bn.js')
 const utils = require('../utils')
 
@@ -47008,7 +47332,7 @@ class MerkleTreeNode {
 
 module.exports = MerkleTreeNode
 
-},{"../utils":437,"bn.js":33}],435:[function(require,module,exports){
+},{"../utils":438,"bn.js":33}],436:[function(require,module,exports){
 (function (Buffer){
 const BigNum = require('bn.js')
 const web3Utils = require('../web3-utils')
@@ -47308,7 +47632,7 @@ module.exports = PlasmaMerkleSumTree
 
 }).call(this,{"isBuffer":require("../../node_modules/is-buffer/index.js")})
 
-},{"../../node_modules/is-buffer/index.js":134,"../constants":410,"../serialization":415,"../utils":437,"../web3-utils":438,"./merkle-tree-node":434,"./sum-tree":436,"bn.js":33}],436:[function(require,module,exports){
+},{"../../node_modules/is-buffer/index.js":134,"../constants":410,"../serialization":416,"../utils":438,"../web3-utils":439,"./merkle-tree-node":435,"./sum-tree":437,"bn.js":33}],437:[function(require,module,exports){
 const web3Utils = require('../web3-utils')
 const utils = require('../utils')
 const MerkleTreeNode = require('./merkle-tree-node')
@@ -47376,7 +47700,7 @@ class MerkleSumTree {
 
 module.exports = MerkleSumTree
 
-},{"../utils":437,"../web3-utils":438,"./merkle-tree-node":434}],437:[function(require,module,exports){
+},{"../utils":438,"../web3-utils":439,"./merkle-tree-node":435}],438:[function(require,module,exports){
 (function (Buffer){
 const BigNum = require('bn.js')
 const web3Utils = require('./web3-utils')
@@ -47546,7 +47870,7 @@ module.exports = {
 
 }).call(this,require("buffer").Buffer)
 
-},{"./constants":410,"./serialization":415,"./web3-utils":438,"bn.js":33,"buffer":66}],438:[function(require,module,exports){
+},{"./constants":410,"./serialization":416,"./web3-utils":439,"bn.js":33,"buffer":66}],439:[function(require,module,exports){
 const { Accounts } = require('web3-eth-accounts')
 const web3Accounts = new Accounts('http://localhost:8545')
 
